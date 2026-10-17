@@ -1,0 +1,33 @@
+[server]
+host = "127.0.0.1"
+port = 8000
+workers = 1
+
+[generation]
+base_url = "http://127.0.0.1:11434"
+model = "qwen2.5:3b"
+context_tokens = 4096
+output_tokens = 512
+
+[embeddings]
+model_path = "models/embeddings/multilingual-e5-small"
+device = "cpu"
+batch_size = 8
+query_prefix = "query: "
+passage_prefix = "passage: "
+
+[limits]
+active_tasks = 1
+queue_capacity = 10
+queue_wait_seconds = 60
+request_deadline_seconds = 180
+model_calls = 3
+tool_calls = 2
+file_bytes = 10485760
+pdf_pages = 50
+extracted_characters = 500000
+
+[access]
+default_policy = "deny"
+allowed_tools = ["search_documents", "read_fragment"]
+policy_document = "docs/access-policy.md"
