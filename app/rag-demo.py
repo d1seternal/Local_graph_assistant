@@ -1,6 +1,5 @@
 import os
 
-# Устанавливаем до импорта библиотек моделей.
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
@@ -21,7 +20,7 @@ from sentence_transformers import SentenceTransformer
 from app.core.config import PROJECT_ROOT, load_config
 
 
-DOCUMENT_PATH = PROJECT_ROOT / "data/test/project-alpha.txt"
+DOCUMENT_PATH = PROJECT_ROOT / "data/test/project.txt"
 
 
 def main(question: str) -> None:
@@ -58,7 +57,6 @@ def main(question: str) -> None:
             if not question.strip() or len(question) > 1000:
                 raise ValueError("Вопрос должен содержать от 1 до 1000 символов.")
 
-            # Более строгий предел для первого демонстрационного запуска.
             if DOCUMENT_PATH.stat().st_size > 100_000:
                 raise ValueError("Тестовый файл превышает 100 КБ.")
 
@@ -88,8 +86,7 @@ def main(question: str) -> None:
                     line,
                     add_special_tokens=False,
                 )
-
-                # Фрагменты по 256 токенов; перекрытие — 32 токена.
+                
                 for start in range(0, len(tokens), 224):
                     fragment = model.tokenizer.decode(
                         tokens[start:start + 256],
@@ -133,7 +130,6 @@ def main(question: str) -> None:
                 for index in best_indices
             ]
 
-        # Освобождаем Python-модель до вызова генерации.
         del model, vectors, document_vectors, question_vector
         gc.collect()
 
