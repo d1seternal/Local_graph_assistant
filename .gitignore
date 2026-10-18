@@ -10,14 +10,12 @@ __pycache__/
 .coverage
 htmlcov/
 
-# Local application state
 /data/
 /models/
 /logs/
 /reports/
 /wheelhouse/
 
-# Databases and SQLite auxiliary files
 *.db
 *.db-*
 *.sqlite
@@ -25,7 +23,6 @@ htmlcov/
 *.sqlite3
 *.sqlite3-*
 
-# Secrets
 .env
 .env.*
 !.env.example
@@ -33,12 +30,10 @@ htmlcov/
 *.pem
 *.key
 
-# Editor and macOS files
 .idea/
 .vscode/
 .DS_Store
 *.swp
 *.swo
 
-# Local archives
 *.zip
