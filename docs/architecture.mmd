@@ -1,0 +1,33 @@
+flowchart TB
+    UI["Локальный интерфейс приложения"]
+    API["API и контроль доступа"]
+    QUEUE["Диспетчер задач"]
+    PARSER["Сервис парсинга и разбиения текста"]
+    GRAPH["Граф управления"]
+    EMBED["Локальная модель эмбеддингов"]
+    SEARCH["Сервис проверки прав, поиска и чтения данных"]
+    GENERATION["Сервис генерации"]
+    STORE["Локальное хранилище"]
+    LOG["Журнал выполнения запросов"]
+
+    UI -->|"Документ или вопрос"| API
+    API -->|"Проверенная задача"| QUEUE
+    QUEUE -->|"Подготовка документа"| PARSER
+    QUEUE -->|"Обработка вопроса"| GRAPH
+    QUEUE -->|"Приём, ожидание и завершение задачи"| LOG
+    PARSER -->|"Вычислить векторы фрагментов"| EMBED
+    EMBED -->|"Сохранить документ, фрагменты и векторы"| STORE
+    GRAPH -->|"Проверить доступ и получить контекст"| SEARCH
+    GRAPH -->|"Передать вопрос и контекст"| GENERATION
+    SEARCH -->|"Найти и прочитать разрешённые данные"| STORE
+
+    classDef entry fill:#EEF3F8,stroke:#526278,color:#17212B
+    classDef preparation fill:#EAF4EE,stroke:#526278,color:#17212B
+    classDef answering fill:#EAF0FA,stroke:#526278,color:#17212B
+    classDef storage fill:#F1F1F1,stroke:#526278,color:#17212B
+    classDef logging fill:#FFF3DF,stroke:#526278,color:#17212B
+    class UI,API,QUEUE entry
+    class PARSER,EMBED preparation
+    class GRAPH,SEARCH,GENERATION answering
+    class STORE storage
+    class LOG logging
