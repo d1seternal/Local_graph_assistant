@@ -48,3 +48,30 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id
 ON sessions(user_id);
+
+
+CREATE TABLE IF NOT EXISTS documents (
+    id TEXT PRIMARY KEY,
+    collection_id TEXT NOT NULL REFERENCES collections(id),
+    created_by TEXT NOT NULL REFERENCES users(id),
+
+    original_name TEXT NOT NULL,
+    storage_name TEXT NOT NULL UNIQUE,
+
+    extension TEXT NOT NULL
+        CHECK (extension IN ('.txt', '.docx', '.pdf')),
+
+    size_bytes INTEGER NOT NULL CHECK (size_bytes > 0),
+    sha256 TEXT NOT NULL,
+
+    status TEXT NOT NULL DEFAULT 'uploaded'
+        CHECK (status IN ('uploaded', 'processing', 'ready', 'failed')),
+
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_documents_collection_id
+ON documents(collection_id);
+
+CREATE INDEX IF NOT EXISTS idx_documents_collection_sha256
+ON documents(collection_id, sha256);
