@@ -75,3 +75,27 @@ ON documents(collection_id);
 
 CREATE INDEX IF NOT EXISTS idx_documents_collection_sha256
 ON documents(collection_id, sha256);
+
+CREATE TABLE IF NOT EXISTS document_indexes (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL UNIQUE
+        REFERENCES documents(id) ON DELETE CASCADE,
+    document_sha256 TEXT NOT NULL,
+    embedding_model TEXT NOT NULL,
+    model_fingerprint TEXT NOT NULL,
+    dimensions INTEGER NOT NULL CHECK (dimensions = 384),
+    chunk_count INTEGER NOT NULL CHECK (chunk_count > 0),
+    settings_json TEXT NOT NULL,
+    indexed_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS document_chunks (
+    id TEXT PRIMARY KEY,
+    index_id TEXT NOT NULL
+        REFERENCES document_indexes(id) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+    text TEXT NOT NULL,
+    source_json TEXT NOT NULL,
+    embedding BLOB NOT NULL CHECK (length(embedding) = 1536),
+    UNIQUE (index_id, ordinal)
+);
