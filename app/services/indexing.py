@@ -19,9 +19,13 @@ from app.services.parsing import ParsingError, parse_document
 from app.storage.database import database
 
 
-CHUNK_TOKENS = 256
-OVERLAP_TOKENS = 32
-MAX_CHUNKS = 5000
+config = load_config()
+embedding_config = config["embeddings"]
+indexing_config = config["indexing"]
+
+CHUNK_TOKENS = indexing_config["chunk_tokens"]
+OVERLAP_TOKENS = indexing_config["overlap_tokens"]
+MAX_CHUNKS = indexing_config["max_chunks"]
 INDEX_LOCK = Lock()
 
 
@@ -32,8 +36,9 @@ def _get_embedder():
     import torch
     from sentence_transformers import SentenceTransformer
 
-    torch.set_num_threads(2)
-    path = PROJECT_ROOT / load_config()["embeddings"]["model_path"]
+
+    torch.set_num_threads(embedding_config["cpu_threads"])
+    path = PROJECT_ROOT / embedding_config["model_path"]
     assets = sorted(p for p in path.rglob("*") if p.is_file())
     if not assets or not any(p.suffix in {".safetensors", ".bin"} for p in assets):
         raise DocumentError(503, "Локальные веса E5 не найдены.")
@@ -44,9 +49,14 @@ def _get_embedder():
         fingerprint.update(b"\0")
         fingerprint.update(file_sha256(asset).encode())
 
+
     model = SentenceTransformer(
-        str(path), device="cpu", local_files_only=True, trust_remote_code=False,
+        str(path),
+        device=embedding_config["device"],
+        local_files_only=True,
+        trust_remote_code=False,
     )
+
     if model.get_embedding_dimension() != 384:
         raise DocumentError(503, "Ожидается multilingual-e5-small с размерностью 384.")
     if not model.tokenizer.is_fast:
@@ -125,7 +135,7 @@ def _validate_stored_document(document: dict) -> Path:
 
 def _build_embedding_rows(chunks, model, index_id: str,
                           check_deadline: Callable[[], None]) -> list[tuple]:
-    batch_size = int(load_config()["embeddings"].get("batch_size", 8))
+    batch_size = embedding_config["batch_size"]
     if not 1 <= batch_size <= 32:
         raise DocumentError(503, "Размер пакета должен быть от 1 до 32.")
     rows = []
@@ -204,7 +214,7 @@ def index_document(user: dict, collection_id: str, document_id: str) -> dict:
         raise DocumentError(503, "Индексация уже выполняется. Повторите позже.")
     try:
         started = time.monotonic()
-        deadline = started + 180
+        deadline = started + indexing_config["timeout_seconds"]
         processing = False
 
         def check_deadline():
@@ -218,7 +228,7 @@ def index_document(user: dict, collection_id: str, document_id: str) -> dict:
             check_deadline()
 
             try:
-                units = parse_document(path, document["extension"], timeout=30)
+                units = parse_document(path, document["extension"], timeout=indexing_config["parse_timeout_seconds"])
             except ParsingError as error:
                 raise DocumentError(400, str(error)) from error
             except TimeoutError as error:
