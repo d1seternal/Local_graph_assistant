@@ -27,6 +27,7 @@ cpu_threads = 2
 batch_size = 8
 query_prefix = "query: "
 passage_prefix = "passage: "
+max_input_tokens = 512
 
 [indexing]
 chunk_tokens = 256
@@ -46,3 +47,11 @@ file_bytes = 10485760
 pdf_pages = 50
 extracted_characters = 500000
 
+[search]
+max_query_characters = 2000
+max_search_chunks = 10000
+scan_batch_size = 256
+
+[execution]
+process_stop_grace_seconds = 0.1
+cleanup_timeout_seconds = 0.5
