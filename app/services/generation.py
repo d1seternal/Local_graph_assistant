@@ -4,6 +4,8 @@ from http.client import HTTPException
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, ProxyHandler, HTTPRedirectHandler, build_opener
 from app.core.config import PROJECT_ROOT, load_config
+from app.core.deadlines import Deadline
+from app.services.process_worker import ProcessWorker
 
 from app.services.documents import DocumentError
 
@@ -59,20 +61,20 @@ def _build_messages(question: str, matches: list[dict]) -> tuple[list[dict], lis
 class _NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
-
-
-def _post_ollama(payload: dict) -> dict:
-    request = Request(OLLAMA_URL, data=json.dumps(payload).encode("utf-8"),
+    
+def _post_ollama_direct(payload: dict, options: dict, deadline) -> dict:
+    request = Request(options["url"], data=json.dumps(payload).encode("utf-8"),
                       headers={"Content-Type": "application/json"}, method="POST")
     opener = build_opener(ProxyHandler({}), _NoRedirect())
     try:
-        with opener.open(request, timeout=TIMEOUT_SECONDS) as response:
-            raw = response.read(MAX_RESPONSE_BYTES + 1)
+        with opener.open(request, timeout=min(options["socket_timeout"], deadline.remaining())) as response:
+            raw = response.read(options["max_response_bytes"] + 1)
+            deadline.check()
     except HTTPError as error:
         code = error.code
         error.close()
         if code == 404:
-            raise DocumentError(503, "Ollama не нашла локальную модель qwen2.5:3b.") from None
+            raise DocumentError(503, f"Ollama не нашла локальную модель {payload["model"]}.") from None
         if code in (429, 503):
             raise DocumentError(503, "Ollama занята. Повторите позже.") from None
         raise DocumentError(502, "Ollama вернула ошибку HTTP.") from None
@@ -86,7 +88,7 @@ def _post_ollama(payload: dict) -> dict:
         raise DocumentError(503, "Ошибка соединения с локальным Ollama.") from None
     except HTTPException:
         raise DocumentError(502, "Соединение Ollama завершилось с ошибкой HTTP-протокола.") from None
-    if len(raw) > MAX_RESPONSE_BYTES:
+    if len(raw) > options["max_response_bytes"]:
         raise DocumentError(502, "Ответ Ollama превышает допустимый размер.")
     try:
         result = json.loads(raw)
@@ -97,45 +99,66 @@ def _post_ollama(payload: dict) -> dict:
     return result
 
 
-def generate_answer(question: str, matches: list[dict]) -> dict:
+def _http_job(payload, options, expires_at):
+    return _post_ollama_direct(payload, options, Deadline(expires_at))
+
+
+HTTP_WORKER = ProcessWorker(_http_job)
+_OLLAMA_UNCERTAIN = False
+
+
+def generation_state() -> dict:
+    return {"server_state": "unconfirmed_after_timeout" if _OLLAMA_UNCERTAIN else "available_for_request",
+            "client": HTTP_WORKER.state()}
+
+
+def acknowledge_ollama_stopped(*, confirmed_stopped: bool = False) -> None:
+    if not confirmed_stopped:
+        raise ValueError("Сначала подтвердите завершение генерации на сервере Ollama.")
+    global _OLLAMA_UNCERTAIN
+    _OLLAMA_UNCERTAIN = False
+
+
+def _post_ollama(payload: dict, *, deadline=None) -> dict:
+    global _OLLAMA_UNCERTAIN
+    if _OLLAMA_UNCERTAIN:
+        raise DocumentError(503, "Состояние Ollama после тайм-аута не подтверждено. Проверьте сервер перед повтором.")
+    deadline = deadline or Deadline.after(config["limits"]["request_deadline_seconds"])
+    options = {"url": OLLAMA_URL, "socket_timeout": TIMEOUT_SECONDS,
+               "max_response_bytes": MAX_RESPONSE_BYTES}
+    try:
+        return HTTP_WORKER.call((payload, options, deadline.expires_at), deadline)
+    except DocumentError as error:
+        if error.status_code == 504 and HTTP_WORKER.last_dispatched:
+            _OLLAMA_UNCERTAIN = True
+            HTTP_WORKER.close()
+        raise
+
+
+def generate_answer(question: str, matches: list[dict], *, deadline=None) -> dict:
+    deadline = deadline or Deadline.after(config["limits"]["request_deadline_seconds"])
+    deadline.check()
     messages, sources = _build_messages(question, matches)
+    deadline.check()
     result = _post_ollama({
-        "model": MODEL,
-        "messages": messages,
-        "stream": generation_config["stream"],
-        "keep_alive": generation_config["keep_alive"],
-        "options": {
-            "num_ctx": NUM_CTX,
-            "num_predict": NUM_PREDICT,
-            "temperature": generation_config["temperature"],
-        },
-    })
-    
+        "model": MODEL, "messages": messages,
+        "stream": generation_config["stream"], "keep_alive": generation_config["keep_alive"],
+        "options": {"num_ctx": NUM_CTX, "num_predict": NUM_PREDICT,
+                    "temperature": generation_config["temperature"]},
+    }, deadline=deadline)
+    deadline.check()
     message = result.get("message")
     if result.get("done") is not True or not isinstance(message, dict):
         raise DocumentError(502, "Ollama не завершила формирование ответа.")
     answer = message.get("content")
     if not isinstance(answer, str) or not answer.strip() or message.get("tool_calls"):
         raise DocumentError(502, "Ollama не вернула допустимый текстовый ответ.")
-    
     prompt_tokens = result.get("prompt_eval_count")
     completion_tokens = result.get("eval_count")
-
-    total_tokens = (
-        prompt_tokens + completion_tokens
-        if type(prompt_tokens) is int and type(completion_tokens) is int
-        else None
-    )
-
-    return {
-        "answer": answer.strip(),
-        "model": MODEL,
-        "sources": sources,
-        "finish_reason": result.get("done_reason", "unknown"),
-        "answer_truncated": result.get("done_reason") == "length",
-        "usage": {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": total_tokens,
-        },
-    }
+    total_tokens = (prompt_tokens + completion_tokens
+                    if type(prompt_tokens) is int and type(completion_tokens) is int else None)
+    return {"answer": answer.strip(), "model": MODEL, "sources": sources,
+            "finish_reason": result.get("done_reason", "unknown"),
+            "answer_truncated": result.get("done_reason") == "length",
+            "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
+                      "total_tokens": total_tokens}}

@@ -1,8 +1,5 @@
-from functools import lru_cache
-import hashlib
 from importlib.metadata import version
 import json
-import os
 from pathlib import Path
 from threading import Lock
 import time
@@ -12,6 +9,8 @@ import uuid
 import numpy as np
 
 from app.core.config import PROJECT_ROOT, load_config
+from app.core.deadlines import Deadline, sqlite_budget
+from app.services.embeddings import EMBEDDINGS
 from app.services.documents import (
     DOCUMENT_DIRECTORY, DocumentError, file_sha256, require_collection_access,
 )
@@ -27,41 +26,6 @@ CHUNK_TOKENS = indexing_config["chunk_tokens"]
 OVERLAP_TOKENS = indexing_config["overlap_tokens"]
 MAX_CHUNKS = indexing_config["max_chunks"]
 INDEX_LOCK = Lock()
-
-
-@lru_cache(maxsize=1)
-def _get_embedder():
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    os.environ["TRANSFORMERS_OFFLINE"] = "1"
-    import torch
-    from sentence_transformers import SentenceTransformer
-
-
-    torch.set_num_threads(embedding_config["cpu_threads"])
-    path = PROJECT_ROOT / embedding_config["model_path"]
-    assets = sorted(p for p in path.rglob("*") if p.is_file())
-    if not assets or not any(p.suffix in {".safetensors", ".bin"} for p in assets):
-        raise DocumentError(503, "Локальные веса E5 не найдены.")
-
-    fingerprint = hashlib.sha256()
-    for asset in assets:
-        fingerprint.update(asset.relative_to(path).as_posix().encode())
-        fingerprint.update(b"\0")
-        fingerprint.update(file_sha256(asset).encode())
-
-
-    model = SentenceTransformer(
-        str(path),
-        device=embedding_config["device"],
-        local_files_only=True,
-        trust_remote_code=False,
-    )
-
-    if model.get_embedding_dimension() != 384:
-        raise DocumentError(503, "Ожидается multilingual-e5-small с размерностью 384.")
-    if not model.tokenizer.is_fast:
-        raise DocumentError(503, "Для точных границ нужен fast-токенизатор E5.")
-    return model, fingerprint.hexdigest()
 
 
 def _split_units(units, tokenizer):
@@ -87,7 +51,7 @@ def _split_units(units, tokenizer):
                 )
             source.update(char_start=char_start, char_end=char_end)
             if fragment.strip():
-                if len(tokenizer.encode("passage: " + fragment)) > 512:
+                if len(tokenizer.encode("passage: " + fragment)) > embedding_config["max_input_tokens"]:
                     raise DocumentError(400, "Фрагмент превышает вход E5.")
                 chunks.append({"text": fragment, "source": source})
             if len(chunks) > MAX_CHUNKS:
@@ -98,8 +62,8 @@ def _split_units(units, tokenizer):
         raise DocumentError(400, "Не удалось получить текстовые фрагменты.")
     return chunks
 
-def _begin_indexing(user: dict, collection_id: str, document_id: str) -> dict:
-    with database() as connection:
+def _begin_indexing(user: dict, collection_id: str, document_id: str, deadline) -> dict:
+    with database() as connection, sqlite_budget(connection, deadline):
         connection.execute("BEGIN IMMEDIATE")
         require_collection_access(connection, user, collection_id, "write")
         row = connection.execute(
@@ -170,11 +134,10 @@ def _index_settings() -> dict:
         ]},
     }
 
-
 def _publish_index(user: dict, collection_id: str, document: dict,
                    index_id: str, fingerprint: str, rows: list[tuple],
-                   settings: dict) -> None:
-    with database() as connection:
+                   settings: dict, deadline) -> None:
+    with database() as connection, sqlite_budget(connection, deadline):
         connection.execute("BEGIN IMMEDIATE")
         require_collection_access(connection, user, collection_id, "write")
         connection.execute(
@@ -186,7 +149,7 @@ def _publish_index(user: dict, collection_id: str, document: dict,
                 model_fingerprint, dimensions, chunk_count, settings_json, indexed_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (index_id, document["id"], document["sha256"],
-             "intfloat/multilingual-e5-small", fingerprint, 384, len(rows),
+             embedding_config["model_id"], fingerprint, 384, len(rows),
              json.dumps(settings), int(time.time())),
         )
         connection.executemany(
@@ -198,10 +161,10 @@ def _publish_index(user: dict, collection_id: str, document: dict,
             "UPDATE documents SET status = 'ready' WHERE id = ?", (document["id"],),
         )
 
-
 def _mark_indexing_failed(document_id: str) -> None:
     try:
-        with database() as connection:
+        cleanup = Deadline.after(config["execution"]["cleanup_timeout_seconds"])
+        with database() as connection, sqlite_budget(connection, cleanup):
             connection.execute(
                 "UPDATE documents SET status = 'failed' WHERE id = ? AND status = 'processing'",
                 (document_id,),
@@ -209,51 +172,46 @@ def _mark_indexing_failed(document_id: str) -> None:
     except Exception:
         pass 
 
+
 def index_document(user: dict, collection_id: str, document_id: str) -> dict:
+    started = time.monotonic()
+    request = Deadline.after(config["limits"]["request_deadline_seconds"])
+    deadline = Deadline.after(indexing_config["timeout_seconds"], request)
     if not INDEX_LOCK.acquire(blocking=False):
-        raise DocumentError(503, "Индексация уже выполняется. Повторите позже.")
+        raise DocumentError(503, "Исполнитель занят индексацией, поиском или генерацией.")
+    processing = False
     try:
-        started = time.monotonic()
-        deadline = started + indexing_config["timeout_seconds"]
-        processing = False
-
-        def check_deadline():
-            if time.monotonic() >= deadline:
-                raise DocumentError(504, "Истекло время индексации.")
-
         try:
-            document = _begin_indexing(user, collection_id, document_id)
+            deadline.check()
+            document = _begin_indexing(user, collection_id, document_id, deadline)
             processing = True
             path = _validate_stored_document(document)
-            check_deadline()
-
+            deadline.check()
             try:
-                units = parse_document(path, document["extension"], timeout=indexing_config["parse_timeout_seconds"])
+                units = parse_document(
+                    path, document["extension"],
+                    timeout=min(indexing_config["parse_timeout_seconds"], deadline.remaining()),
+                )
             except ParsingError as error:
                 raise DocumentError(400, str(error)) from error
             except TimeoutError as error:
                 raise DocumentError(504, str(error)) from error
-            check_deadline()
-
-            model, fingerprint = _get_embedder()
-            check_deadline()
-            chunks = _split_units(units, model.tokenizer)
-            check_deadline()
-
+            deadline.check()
             index_id = str(uuid.uuid4())
-            rows = _build_embedding_rows(chunks, model, index_id, check_deadline)
+            prepared = EMBEDDINGS.call(("index", {"units": units, "index_id": index_id},
+                                        deadline.expires_at), deadline)
+            rows, fingerprint = prepared["rows"], prepared["fingerprint"]
+            deadline.check()
             settings = _index_settings()
-            check_deadline()
-            _publish_index(user, collection_id, document, index_id, fingerprint, rows, settings)
-        except Exception:
+            _publish_index(user, collection_id, document, index_id, fingerprint, rows, settings, deadline)
+        except BaseException:
             if processing:
                 _mark_indexing_failed(document_id)
             raise
 
-        return {
-            "document_id": document_id, "index_id": index_id, "status": "ready",
-            "chunks": len(chunks), "dimensions": 384,
-            "duration_seconds": round(time.monotonic() - started, 3),
-        }
+        deadline.check()
+        return {"document_id": document_id, "index_id": index_id, "status": "ready",
+                "chunks": len(rows), "dimensions": 384,
+                "duration_seconds": round(time.monotonic() - started, 3)}
     finally:
-        INDEX_LOCK.release()
+        INDEX_LOCK.release()    

@@ -4,17 +4,22 @@ import time
 import numpy as np
 
 from app.services import indexing
+from app.core.config import load_config
+from app.core.deadlines import Deadline, sqlite_budget
+from app.services.embeddings import EMBEDDINGS
 from app.services.documents import DocumentError, require_collection_access
 from app.storage.database import database
 
+config = load_config()
+embedding_config = config["embeddings"]
+search_config = config["search"]
 
-MODEL_NAME = "intfloat/multilingual-e5-small"
+MODEL_NAME = embedding_config["model_id"]
 DIMENSIONS = 384
-MAX_QUERY_CHARACTERS = 2000
-MAX_QUERY_TOKENS = 512
-MAX_SEARCH_CHUNKS = 10_000
-SCAN_BATCH_SIZE = 256
-SEARCH_SECONDS = 60
+MAX_QUERY_CHARACTERS = search_config["max_query_characters"]
+MAX_QUERY_TOKENS = embedding_config["max_input_tokens"]
+MAX_SEARCH_CHUNKS = search_config["max_search_chunks"]
+SCAN_BATCH_SIZE = search_config["scan_batch_size"]
 
 
 def _validate_query(query: str, top_k: int) -> str:
@@ -134,40 +139,33 @@ def _rank_chunks(connection, collection_id, query_vector, top_k, check_deadline)
         })
     return matches, scanned
 
-
-
-def search_collection(user: dict, collection_id: str, query: str, top_k: int = 5) -> dict:
+def search_collection(user: dict, collection_id: str, query: str, top_k: int = 5,
+                      *, deadline=None, _lock_held=False) -> dict:
+    started = time.monotonic()
+    if deadline is None:
+        deadline = Deadline.after(load_config()["limits"]["request_deadline_seconds"])
     query = _validate_query(query, top_k)
-    with database() as connection:
+    with database() as connection, sqlite_budget(connection, deadline):
         require_collection_access(connection, user, collection_id, "read")
-
-    if not indexing.INDEX_LOCK.acquire(blocking=False):
-        raise DocumentError(503, "Модель занята индексацией или поиском. Повторите позже.")
+    acquired = False
+    if not _lock_held:
+        acquired = indexing.INDEX_LOCK.acquire(blocking=False)
+        if not acquired:
+            raise DocumentError(503, "Исполнитель занят.")
     try:
-        started = time.monotonic()
-
-        def check_deadline():
-            if time.monotonic() - started >= SEARCH_SECONDS:
-                raise DocumentError(504, "Истекло время поиска.")
-
-        model, fingerprint = indexing._get_embedder()
-        check_deadline()
-        vector = _encode_query(model, query)
-        check_deadline()
-        with database() as connection:
+        encoded = EMBEDDINGS.call(("query", {"query": query}, deadline.expires_at), deadline)
+        vector, fingerprint = encoded["vector"], encoded["fingerprint"]
+        with database() as connection, sqlite_budget(connection, deadline):
             connection.execute("BEGIN")
             require_collection_access(connection, user, collection_id, "read")
             _check_indexes(connection, collection_id, fingerprint)
-            matches, scanned = _rank_chunks(
-                connection, collection_id, vector, top_k, check_deadline,
-            )
-        check_deadline()
-        with database() as connection:
+            matches, scanned = _rank_chunks(connection, collection_id, vector, top_k, deadline.check)
+        with database() as connection, sqlite_budget(connection, deadline):
             require_collection_access(connection, user, collection_id, "read")
-        return {
-            "collection_id": collection_id, "query": query, "top_k": top_k,
-            "searched_chunks": scanned, "matches": matches,
-            "duration_seconds": round(time.monotonic() - started, 3),
-        }
+        deadline.check()
+        return {"collection_id": collection_id, "query": query, "top_k": top_k,
+                "searched_chunks": scanned, "matches": matches,
+                "duration_seconds": round(time.monotonic() - started, 3)}
     finally:
-        indexing.INDEX_LOCK.release()
+        if acquired:
+            indexing.INDEX_LOCK.release()

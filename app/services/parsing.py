@@ -1,13 +1,15 @@
-import multiprocessing
 from pathlib import Path
-from queue import Empty
 import zipfile
 
 from app.core.config import load_config
+from app.core.deadlines import Deadline
+from app.services.documents import DocumentError
+from app.services.process_worker import ProcessWorker
 
 
 class ParsingError(ValueError):
     pass
+
 
 
 def _extract(path: Path, extension: str, limits: dict) -> list[dict]:
@@ -84,41 +86,24 @@ def _extract(path: Path, extension: str, limits: dict) -> list[dict]:
         raise ParsingError("Извлекаемый текст не найден. OCR пока не поддерживается.")
     return units
 
+def _parse_job(path, extension, limits, expires_at):
+    deadline = Deadline(expires_at)
+    deadline.check()
+    result = _extract(Path(path), extension, limits)
+    deadline.check()
+    return result
 
-def _worker(path, extension, limits, output):
-    try:
-        output.put({"units": _extract(Path(path), extension, limits)})
-    except ParsingError as error:
-        output.put({"error": str(error)})
-    except Exception as error:
-        output.put({"error": "Не удалось разобрать документ: " + type(error).__name__})
+PARSER = ProcessWorker(_parse_job)
 
 
 def parse_document(path: Path, extension: str, timeout=30.0) -> list[dict]:
-    context = multiprocessing.get_context("spawn")
-    output = context.Queue(maxsize=1)
-    process = context.Process(
-        target=_worker,
-        args=(str(path), extension, load_config().get("limits", {}), output),
-        daemon=True,
-    )
-    process.start()
+    deadline = Deadline.after(timeout)
     try:
-        try:
-            result = output.get(timeout=timeout)
-        except Empty as error:
-            if process.is_alive():
-                raise TimeoutError("Истекло время парсинга.") from error
-            raise ParsingError("Процесс парсера завершился без результата.") from error
-        if "error" in result:
-            raise ParsingError(result["error"])
-        return result["units"]
-    finally:
-        process.join(timeout=0.5)
-        if process.is_alive():
-            process.terminate()
-            process.join(timeout=1)
-        if process.is_alive():
-            process.kill()
-            process.join()
-        output.close()
+        return PARSER.call((str(path), extension, load_config().get("limits", {}),
+                            deadline.expires_at), deadline)
+    except DocumentError as error:
+        if error.status_code == 504:
+            raise TimeoutError("Истекло время парсинга.") from error
+        raise ParsingError(str(error)) from error
+    except RuntimeError as error:
+        raise ParsingError(str(error)) from error
