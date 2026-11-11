@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
+from app.core.config import load_config
 
 from app.api.auth import current_user
 from app.api.documents import document_http_error
@@ -12,7 +13,7 @@ router = APIRouter(prefix="/collections/{collection_id}", tags=["answers"])
 
 class QuestionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    question: str = Field(min_length=1, max_length=2000)
+    question: str = Field(min_length=1, max_length=load_config()["search"]["max_query_characters"])
     top_k: int = Field(default=3, ge=1, le=10, strict=True)
 
 
