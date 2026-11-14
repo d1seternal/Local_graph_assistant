@@ -7,6 +7,18 @@ from app.storage.database import database
 
 router = APIRouter(prefix="/collections", tags=["collections"])
 
+@router.get("")
+def list_collections(user: dict = Depends(current_user)):
+    with database() as connection:
+        connection.execute("BEGIN")
+        rows = connection.execute(
+            "SELECT id, name, kind FROM collections ORDER BY name, id"
+        ).fetchall()
+        return [
+            dict(row)
+            for row in rows
+            if can_access_collection(connection, user["id"], row["id"], "read")
+        ]
 
 @router.get("/{collection_id}")
 def get_collection(
