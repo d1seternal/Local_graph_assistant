@@ -1,3 +1,8 @@
+from pathlib import Path
+
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 
@@ -36,4 +41,12 @@ app.include_router(documents_router)
 app.include_router(indexing_router)
 app.include_router(search_router)
 app.include_router(answers_router)
+
+WEB_DIRECTORY = Path(__file__).with_name("web")
+app.mount("/assets", StaticFiles(directory=WEB_DIRECTORY), name="assets")
+
+
+@app.get("/", include_in_schema=False)
+async def web_home():
+    return FileResponse(WEB_DIRECTORY / "index.html")
 
