@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; form-action 'none'; base-uri 'none'">
+  <title>Локальный ассистент по документам</title>
+  <link rel="stylesheet" href="/assets/app.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+<main>
+  <header>
+    <p class="eyebrow">ЛИЧНОЕ РАБОЧЕЕ ПРОСТРАНСТВО</p>
+    <h1>Локальный ассистент по документам</h1>
+    <p>Задать вопрос для поиска и получения информации по документам формата .txt, .docx и .pdf.</p>
+  </header>
+
+  <p id="status" data-kind="info" role="status" aria-live="polite" hidden></p>
+
+  <section id="sign-in">
+    <h2>Вход</h2>
+    <form id="login">
+      <label>Имя пользователя <input id="username" autocomplete="username" maxlength="30" required></label>
+      <label>Пароль <input id="password" type="password" autocomplete="current-password" minlength="8" maxlength="32" required></label>
+      <button type="submit">Войти</button>
+    </form>
+  </section>
+
+  <div id="workspace" hidden>
+    <section>
+      <div class="row between"><span id="identity"></span><button id="logout" class="secondary">Выйти</button></div>
+      <label>Коллекция <select id="collections"></select></label>
+    </section>
+
+    <div class="grid" id="collection-workspace" hidden>
+      <section>
+        <h2>Документы</h2>
+        <form id="upload">
+          <!-- <label>Выберите TXT, PDF или DOCX <input id="file" type="file" accept=".txt,.pdf,.docx" required></label> -->
+          <button type="submit">Загрузить и проиндексировать</button>
+        </form>
+        <p id="empty-docs" class="muted" hidden>В этой коллекции пока нет документов.</p>
+        <ul id="documents"></ul>
+        <div class="row" id="pagination" hidden>
+          <button id="previous" type="button" class="secondary">Назад</button>
+          <button id="next" type="button" class="secondary">Далее</button>
+        </div>
+      </section>
+
+      <section>
+        <h2>Задать вопрос</h2>
+        <form id="ask">
+          <!-- <label>Вопрос по выбранной коллекции <textarea id="question" rows="3" required></textarea></label> -->
+          <button type="submit">Получить ответ</button>
+        </form>
+        <div id="result" hidden>
+          <h3>Ответ</h3>
+          <p id="answer" class="preserve"></p>
+          <h3>Источники</h3>
+          <ul id="sources"></ul>
+          <p id="usage" class="muted"></p>
+        </div>
+      </section>
+    </div>
+  </div>
+</main>
+</body>
+</html>
