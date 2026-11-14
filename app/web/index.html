@@ -14,7 +14,7 @@
   <header>
     <p class="eyebrow">ЛИЧНОЕ РАБОЧЕЕ ПРОСТРАНСТВО</p>
     <h1>Локальный ассистент по документам</h1>
-    <p>Задать вопрос для поиска и получения информации по документам формата .txt, .docx и .pdf.</p>
+    <p>Задать вопрос для поиска и получения информации по документам формата txt, docx и pdf.</p>
   </header>
 
   <p id="status" data-kind="info" role="status" aria-live="polite" hidden></p>
@@ -38,7 +38,7 @@
       <section>
         <h2>Документы</h2>
         <form id="upload">
-          <!-- <label>Выберите TXT, PDF или DOCX <input id="file" type="file" accept=".txt,.pdf,.docx" required></label> -->
+          <label><input id="file" type="file" accept=".txt,.pdf,.docx" required></label>
           <button type="submit">Загрузить и проиндексировать</button>
         </form>
         <p id="empty-docs" class="muted" hidden>В этой коллекции пока нет документов.</p>
@@ -52,7 +52,7 @@
       <section>
         <h2>Задать вопрос</h2>
         <form id="ask">
-          <!-- <label>Вопрос по выбранной коллекции <textarea id="question" rows="3" required></textarea></label> -->
+          <label><textarea id="question" rows="3" required></textarea></label>
           <button type="submit">Получить ответ</button>
         </form>
         <div id="result" hidden>
